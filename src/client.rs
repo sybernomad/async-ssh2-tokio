@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use russh::client::{Config, Handle, Handler};
+use russh::Channel;
+use russh::client::{Config, Handle, Handler, Msg};
 use russh_keys::key::KeyPair;
 use std::io::{self, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -54,6 +55,33 @@ impl ServerCheckMethod {
 
     pub fn with_known_hosts_file(known_hosts_file: &str) -> Self {
         Self::KnownHostsFile(known_hosts_file.to_string())
+    }
+}
+
+
+pub struct ChannelHelper{
+    ch: Channel<Msg>,
+}
+
+impl ChannelHelper {
+    pub async fn execute(&mut self, command: &str) -> Result<CommandExecutedResult, crate::Error> {
+        self.ch.exec(true, command).await?;
+        let mut receive_buffer = vec![];
+        while let Some(msg) = self.ch.wait().await {
+            match msg {
+                russh::ChannelMsg::Data { ref data } => receive_buffer.write_all(data).unwrap(),
+                russh::ChannelMsg::ExitStatus { exit_status } => {
+                    let result = CommandExecutedResult {
+                        output: String::from_utf8_lossy(&receive_buffer).to_string(),
+                        exit_status,
+                    };
+                    return Ok(result);
+                }
+                _ => {}
+            }
+        }
+
+        Err(crate::Error::CommandDidntExit)
     }
 }
 
@@ -223,25 +251,17 @@ impl Client {
     /// Can be called multiple times, but every invocation is a new shell context.
     /// Thus `cd`, setting variables and alike have no effect on future invocations.
     pub async fn execute(&mut self, command: &str) -> Result<CommandExecutedResult, crate::Error> {
-        let mut receive_buffer = vec![];
-        let mut channel = self.connection_handle.channel_open_session().await?;
-        channel.exec(true, command).await?;
+        return match self.open_channel().await {
+            Ok(mut helper) => helper.execute(command).await,
+            Err(e) => Err(e)            
+        };
+    }
 
-        while let Some(msg) = channel.wait().await {
-            match msg {
-                russh::ChannelMsg::Data { ref data } => receive_buffer.write_all(data).unwrap(),
-                russh::ChannelMsg::ExitStatus { exit_status } => {
-                    let result = CommandExecutedResult {
-                        output: String::from_utf8_lossy(&receive_buffer).to_string(),
-                        exit_status,
-                    };
-                    return Ok(result);
-                }
-                _ => {}
-            }
+    pub async fn open_channel(&mut self) -> Result<ChannelHelper, crate::Error> {
+        match self.connection_handle.channel_open_session().await {
+            Ok(ch)    => Ok(ChannelHelper{ch}),
+            Err(e) => Err(crate::Error::SshError(e)),
         }
-
-        Err(crate::Error::CommandDidntExit)
     }
 
     /// A debugging function to get the username this client is connected as.

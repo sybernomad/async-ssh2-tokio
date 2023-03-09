@@ -43,5 +43,5 @@
 pub mod client;
 pub mod error;
 
-pub use client::{AuthMethod, Client, ServerCheckMethod};
+pub use client::{AuthMethod, Client, ServerCheckMethod, ChannelHelper};
 pub use error::Error;

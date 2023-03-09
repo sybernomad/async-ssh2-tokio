@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use russh::Channel;
 use russh::client::{Config, Handle, Handler, Msg};
+use russh::{Channel, ChannelStream};
 use russh_keys::key::KeyPair;
 use std::io::{self, Write};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 
 /// An authentification token, currently only by password.
 ///
@@ -58,8 +59,26 @@ impl ServerCheckMethod {
     }
 }
 
+pub struct ChannelStreamer {
+    stream: ChannelStream,
+}
 
-pub struct ChannelHelper{
+impl ChannelStreamer {
+    pub async fn file_transfer(&mut self, val: u32) -> Result<CommandExecutedResult, crate::Error> {
+        let _res = self.stream.write_u32(val).await;
+
+        return Ok(CommandExecutedResult {
+            output: "test".to_string(),
+            exit_status: 0,
+        });
+        //let mut ch = &self.ch;
+        // OR use a mutable reference
+        //let x = ch.into_stream();
+        //Err(crate::Error::CommandDidntExit)
+    }
+}
+
+pub struct ChannelHelper {
     ch: Channel<Msg>,
 }
 
@@ -69,7 +88,9 @@ impl ChannelHelper {
         let mut receive_buffer = vec![];
         while let Some(msg) = self.ch.wait().await {
             match msg {
-                russh::ChannelMsg::Data { ref data } => receive_buffer.write_all(data).unwrap(),
+                russh::ChannelMsg::Data { ref data } => {
+                    std::io::Write::write_all(&mut receive_buffer, data).unwrap()
+                }
                 russh::ChannelMsg::ExitStatus { exit_status } => {
                     let result = CommandExecutedResult {
                         output: String::from_utf8_lossy(&receive_buffer).to_string(),
@@ -253,13 +274,28 @@ impl Client {
     pub async fn execute(&mut self, command: &str) -> Result<CommandExecutedResult, crate::Error> {
         return match self.open_channel().await {
             Ok(mut helper) => helper.execute(command).await,
-            Err(e) => Err(e)            
+            Err(e) => Err(e),
+        };
+    }
+
+    pub async fn file_transfer(
+        &mut self,
+        val: u32,
+    ) -> Result<CommandExecutedResult, crate::Error> {
+        let channel = self.connection_handle.channel_open_session().await?;
+        let stream = channel.into_stream();
+
+        let mut streamer_helper = ChannelStreamer { stream };
+
+        return match streamer_helper.file_transfer(val).await {
+            Ok(x) => Ok(x),
+            Err(e) => Err(e),
         };
     }
 
     pub async fn open_channel(&mut self) -> Result<ChannelHelper, crate::Error> {
         match self.connection_handle.channel_open_session().await {
-            Ok(ch)    => Ok(ChannelHelper{ch}),
+            Ok(ch) => Ok(ChannelHelper { ch }),
             Err(e) => Err(crate::Error::SshError(e)),
         }
     }

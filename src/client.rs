@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use russh::client::{Config, Handle, Handler, Msg};
-use russh::{Channel, ChannelStream};
+use russh::Channel;
 use russh_keys::key::KeyPair;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read};
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
@@ -269,27 +269,18 @@ impl Client {
         let mut stream = channel.into_stream();
 
         let mut file = File::open(filepath).unwrap();
+        let mut reader = BufReader::new(file);
 
-        // Stream the file contents as u8
-        let mut buffer = [0u8; 1024]; // buffer to hold the bytes read
-        loop {
-            match file.read(&mut buffer) {
-                Ok(0) => break, // end of file
-                Ok(n) => {
-                    for byte in buffer.iter().take(n) {
-                        stream.write_u8(*byte).await;
-                    }
-                }
-                Err(e) => panic!("Error reading file: {}", e),
-            }
-        }
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer);
+
+        stream.write_all(&buffer).await;
 
         Ok(CommandExecutedResult {
             output: "Test".to_string(),
             exit_status: 0,
         })
     }
-
     pub async fn open_channel(&mut self) -> Result<ChannelHelper, crate::Error> {
         match self.connection_handle.channel_open_session().await {
             Ok(ch) => Ok(ChannelHelper { ch }),

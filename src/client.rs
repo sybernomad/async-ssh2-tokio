@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use russh::client::{Config, Handle, Handler, Msg};
 use russh::{Channel, ChannelStream};
 use russh_keys::key::KeyPair;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, Read};
+
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -56,25 +58,6 @@ impl ServerCheckMethod {
 
     pub fn with_known_hosts_file(known_hosts_file: &str) -> Self {
         Self::KnownHostsFile(known_hosts_file.to_string())
-    }
-}
-
-pub struct ChannelStreamer {
-    stream: ChannelStream,
-}
-
-impl ChannelStreamer {
-    pub async fn file_transfer(&mut self, val: u32) -> Result<CommandExecutedResult, crate::Error> {
-        let _res = self.stream.write_u32(val).await;
-
-        return Ok(CommandExecutedResult {
-            output: "test".to_string(),
-            exit_status: 0,
-        });
-        //let mut ch = &self.ch;
-        // OR use a mutable reference
-        //let x = ch.into_stream();
-        //Err(crate::Error::CommandDidntExit)
     }
 }
 
@@ -280,17 +263,31 @@ impl Client {
 
     pub async fn file_transfer(
         &mut self,
-        val: u32,
+        filepath: String,
     ) -> Result<CommandExecutedResult, crate::Error> {
         let channel = self.connection_handle.channel_open_session().await?;
-        let stream = channel.into_stream();
+        let mut stream = channel.into_stream();
 
-        let mut streamer_helper = ChannelStreamer { stream };
+        let mut file = File::open(filepath).unwrap();
 
-        return match streamer_helper.file_transfer(val).await {
-            Ok(x) => Ok(x),
-            Err(e) => Err(e),
-        };
+        // Stream the file contents as u8
+        let mut buffer = [0u8; 1024]; // buffer to hold the bytes read
+        loop {
+            match file.read(&mut buffer) {
+                Ok(0) => break, // end of file
+                Ok(n) => {
+                    for byte in buffer.iter().take(n) {
+                        stream.write_u8(*byte).await;
+                    }
+                }
+                Err(e) => panic!("Error reading file: {}", e),
+            }
+        }
+
+        Ok(CommandExecutedResult {
+            output: "Test".to_string(),
+            exit_status: 0,
+        })
     }
 
     pub async fn open_channel(&mut self) -> Result<ChannelHelper, crate::Error> {
